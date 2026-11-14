@@ -2836,6 +2836,36 @@ pub fn stitch_and_orient_with_identity(
     options: &StitchAndOrientOptions,
     identity: Option<crate::query::brep::BrepIdentity<'_>>,
 ) -> Result<()> {
+    stitch_and_orient_searching(k, b, options, identity, false)
+}
+
+/// [`stitch_and_orient_with_identity`] of faces that close at most one shell, in a B-rep
+/// that held nothing else: the stitch searches for the infinite region once, at its end,
+/// and not also at the glue that closes the shell
+/// ([`crate::heal::stitch::p1::Stitch::one_solid`]). Not upstream. The caller answers for
+/// the premise, which is why this is not an option of [`StitchAndOrientOptions`]: a
+/// B-rep that already holds a face, a wire or a loose vertex has shells the closing
+/// glue's search places, and they would be left where they are.
+///
+/// # Errors
+///
+/// Those of [`stitch_and_orient`].
+pub(crate) fn stitch_and_orient_one_solid(
+    k: &mut Kernel,
+    b: &mut Brep,
+    options: &StitchAndOrientOptions,
+    identity: Option<crate::query::brep::BrepIdentity<'_>>,
+) -> Result<()> {
+    stitch_and_orient_searching(k, b, options, identity, true)
+}
+
+fn stitch_and_orient_searching(
+    k: &mut Kernel,
+    b: &mut Brep,
+    options: &StitchAndOrientOptions,
+    identity: Option<crate::query::brep::BrepIdentity<'_>>,
+    one_solid: bool,
+) -> Result<()> {
     k.check_cancelled(OP)?;
     let mut lamina = 0;
     let mut tolerance = initial_stitch_tolerance(b.tolerance(), options.stitch_tolerance);
@@ -2847,6 +2877,7 @@ pub fn stitch_and_orient_with_identity(
             options.allow_spine_edges,
             &mut lamina,
             identity,
+            one_solid,
         ),
         k.fixes.brep_edit_statuses_pass_on,
     )?)?;
@@ -2864,6 +2895,7 @@ pub fn stitch_and_orient_with_identity(
                 options.allow_spine_edges,
                 &mut lamina,
                 identity,
+                one_solid,
             ),
             k.fixes.brep_edit_statuses_pass_on,
         )?)?;
@@ -2986,15 +3018,26 @@ fn stitch_faces(
     allow_spine: bool,
     lamina: &mut usize,
     identity: Option<crate::query::brep::BrepIdentity<'_>>,
+    one_solid: bool,
 ) -> Result<()> {
-    let out = crate::topology::brep::p4::stitch_faces_with_identity(
-        k,
-        b,
-        tolerance,
-        None,
-        allow_spine,
-        identity,
-    )?;
+    let out = if one_solid {
+        crate::topology::brep::p4::stitch_one_solid_with_identity(
+            k,
+            b,
+            tolerance,
+            allow_spine,
+            identity,
+        )?
+    } else {
+        crate::topology::brep::p4::stitch_faces_with_identity(
+            k,
+            b,
+            tolerance,
+            None,
+            allow_spine,
+            identity,
+        )?
+    };
     *lamina = usize::try_from(out.lamina_edges)
         .map_err(|_| SolidError::invalid_input(OP, "lamina edge count"))?;
     Ok(())
@@ -3839,6 +3882,7 @@ mod tests {
                 false,
                 &mut lamina,
                 None,
+                false,
             );
             let r = stitch_and_orient(&mut k, &mut b, &StitchAndOrientOptions::default());
             let box_error = |r: &Result<()>| {
